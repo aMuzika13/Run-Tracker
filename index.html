@@ -1,0 +1,303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Marathon & Ultra Training Tracker</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts - Inter -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Web App Manifest -->
+    <link rel="manifest" href="manifest.json">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+            color: #374151;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 1.5rem;
+        }
+        .status-completed {
+            background-color: #d1fae5; /* Green-100 */
+        }
+        .status-partially_completed {
+            background-color: #fffbeb; /* Amber-100 */
+        }
+        .status-not_completed {
+            background-color: #fee2e2; /* Red-100 */
+        }
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(255, 255, 255, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+        }
+        .spinner {
+            border: 4px solid rgba(0, 0, 0, 0.1);
+            border-left-color: #3b82f6;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="antialiased">
+    <div id="loading-overlay" class="loading-overlay">
+        <div class="spinner"></div>
+    </div>
+
+    <div class="container">
+        <header class="text-center py-8">
+            <h1 class="text-4xl font-bold text-gray-900 mb-2">Marathon & Ultra Training Tracker</h1>
+            <p class="text-lg text-gray-600">Track your progress towards your 3:25 Marathon and 50-Mile Ultra goals!</p>
+            <p id="user-id-display" class="text-sm text-gray-500 mt-2">Loading user...</p>
+        </header>
+
+        <main id="training-plan-container" class="space-y-6">
+            <!-- Training plan content will be loaded here by JavaScript -->
+        </main>
+
+        <footer class="text-center py-8 text-gray-500 text-sm">
+            <p>&copy; 2025 Training Tracker. All rights reserved.</p>
+        </footer>
+    </div>
+
+    <script type="module">
+        // Firebase imports
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, query, where } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Global variables provided by the Canvas environment
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        let firebaseApp;
+        let db;
+        let auth;
+        let currentUserId = null;
+        let isAuthReady = false;
+
+        const loadingOverlay = document.getElementById('loading-overlay');
+        const userIdDisplay = document.getElementById('user-id-display');
+        const trainingPlanContainer = document.getElementById('training-plan-container');
+
+        // Define your training plan data
+        const trainingPlanData = [
+            { overallWeek: 1, dateRange: "Jun 15 - Jun 21", monday: "5 km (Easy)", wednesday: "5 km (Easy)", friday: "5 km (Easy)", saturday: "6.5 km (Long Run)" },
+            { overallWeek: 2, dateRange: "Jun 22 - Jun 28", monday: "6.5 km (Easy)", wednesday: "5 km (Easy)", friday: "5 km (Easy)", saturday: "8 km (Long Run)" },
+            { overallWeek: 3, dateRange: "Jun 29 - Jul 5", monday: "6.5 km (Easy)", wednesday: "6.5 km (Easy)", friday: "5 km (Easy)", saturday: "10 km (Long Run)" },
+            { overallWeek: 4, dateRange: "Jul 6 - Jul 12", monday: "6.5 km (Easy)", wednesday: "6.5 km (Easy)", friday: "5 km (Easy)", saturday: "11.5 km (Long Run)" },
+            { overallWeek: 5, dateRange: "Jul 13 - Jul 19", monday: "6.5 km (Easy)", wednesday: "5 km (Easy)", friday: "6.5 km (Easy)", saturday: "13 km (Long Run)" },
+            { overallWeek: 6, dateRange: "Jul 20 - Jul 26", monday: "8 km (Easy)", wednesday: "5 km (Easy)", friday: "6.5 km (Easy)", saturday: "14.5 km (Long Run)" },
+            { overallWeek: 7, dateRange: "Jul 27 - Aug 2", monday: "8 km (Easy)", wednesday: "6.5 km (2 x 10min Tempo)", friday: "6.5 km (Easy)", saturday: "16 km (Long Run)" },
+            { overallWeek: 8, dateRange: "Aug 3 - Aug 9", monday: "8 km (Easy)", wednesday: "6.5 km (6 x 400m intervals)", friday: "6.5 km (Easy)", saturday: "18 km (Long Run)" },
+            { overallWeek: 9, dateRange: "Aug 10 - Aug 16", monday: "10 km (Easy)", wednesday: "8 km (3 x 10min Tempo)", friday: "6.5 km (Easy)", saturday: "19.5 km (Long Run)" },
+            { overallWeek: 10, dateRange: "Aug 17 - Aug 23", monday: "10 km (Easy)", wednesday: "8 km (8 x 400m intervals)", friday: "6.5 km (Easy)", saturday: "21 km (Long Run)" },
+            { overallWeek: 11, dateRange: "Aug 24 - Aug 30", monday: "10 km (Easy)", wednesday: "10 km (2 x 15min Tempo)", friday: "8 km (Easy)", saturday: "22.5 km (Long Run)" },
+            { overallWeek: 12, dateRange: "Aug 31 - Sep 6", monday: "10 km (Easy)", wednesday: "10 km (5 x 800m intervals)", friday: "8 km (Easy)", saturday: "24 km (Long Run)" },
+            { overallWeek: 13, dateRange: "Sep 7 - Sep 13", monday: "10 km (Easy)", wednesday: "8 km (1 x 20min Tempo)", friday: "8 km (Easy)", saturday: "26 km (Long Run)" },
+            { overallWeek: 14, dateRange: "Sep 14 - Sep 20", monday: "10 km (Easy)", wednesday: "10 km (3 x 1.6 km intervals)", friday: "8 km (Easy)", saturday: "27.5 km (Long Run)" },
+            { overallWeek: 15, dateRange: "Sep 21 - Sep 27", monday: "11.5 km (Easy)", wednesday: "10 km (2 x 20min Tempo)", friday: "8 km (Easy)", saturday: "29 km (Long Run)" },
+            { overallWeek: 16, dateRange: "Sep 28 - Oct 4", monday: "11.5 km (Easy)", wednesday: "10 km (4 x 1.6 km intervals)", friday: "8 km (Easy)", saturday: "30.5 km (Long Run)" },
+            { overallWeek: 17, dateRange: "Oct 5 - Oct 11", monday: "11.5 km (Easy)", wednesday: "11.5 km (1 x 25min Tempo)", friday: "10 km (Easy)", saturday: "32 km (Long Run)" },
+            { overallWeek: 18, dateRange: "Oct 12 - Oct 18", monday: "11.5 km (Easy)", wednesday: "11.5 km (6 x 800m at faster pace)", friday: "10 km (Easy)", saturday: "16 km (Cutback)" },
+            { overallWeek: 19, dateRange: "Oct 19 - Oct 25", monday: "11.5 km (Easy)", wednesday: "11.5 km (4 x 1.6 km intervals @ MP)", friday: "10 km (Easy)", saturday: "32 km (Long Run)" },
+            { overallWeek: 20, dateRange: "Oct 26 - Nov 1", monday: "13 km (Easy)", wednesday: "13 km (3 x 3.2 km @ MP)", friday: "10 km (Easy)", saturday: "34 km (Long Run)" },
+            { overallWeek: 21, dateRange: "Nov 2 - Nov 8", monday: "13 km (Easy)", wednesday: "13 km (6 x 800m @ slightly faster)", friday: "10 km (Easy)", saturday: "35.5 km (Max Long Run)" },
+            { overallWeek: 22, dateRange: "Nov 9 - Nov 15", monday: "13 km (Easy)", wednesday: "11.5 km (2 x 3.2 km @ MP)", friday: "10 km (Easy)", saturday: "19.5 km (Cutback)" },
+            { overallWeek: 23, dateRange: "Nov 16 - Nov 22", monday: "13 km (Easy)", wednesday: "13 km (3 x 1.6 km @ MP + 4 x 400m fast)", friday: "10 km (Easy)", saturday: "32 km (Long Run)" },
+            { overallWeek: 24, dateRange: "Nov 23 - Nov 29", monday: "13 km (Easy)", wednesday: "11.5 km (1 x 30min Tempo)", friday: "10 km (Easy)", saturday: "34 km (Long Run)" },
+            { overallWeek: 25, dateRange: "Nov 30 - Dec 6", monday: "13 km (Easy)", wednesday: "11.5 km (4 x 1k intervals)", friday: "10 km (Easy)", saturday: "35.5 km (Final Peak Long Run)" },
+            { overallWeek: 26, dateRange: "Dec 7 - Dec 13", monday: "13 km (Easy)", wednesday: "10 km (2 x 2.4 km @ MP)", friday: "10 km (Easy)", saturday: "19.5 km (Cutback)" },
+            { overallWeek: 27, dateRange: "Dec 14 - Dec 20", monday: "10 km (Easy)", wednesday: "6.5 km (2 x 1.6 km @ MP)", friday: "6.5 km (Easy)", saturday: "16 km (Taper)" },
+            { overallWeek: 28, dateRange: "Dec 21 - Dec 27", monday: "6.5 km (Easy)", wednesday: "5 km (2 x 800m @ MP)", friday: "5 km (Easy)", saturday: "10 km (Taper)" },
+            { overallWeek: 29, dateRange: "Dec 28 - Jan 3", monday: "5 km (Easy)", wednesday: "3 km (4 x 200m light strides)", friday: "3 km (Easy)", saturday: "5-6.5 km (Final Volume Reduction)" },
+            { overallWeek: 30, dateRange: "Jan 4 - Jan 10", monday: "3 km (Easy)", wednesday: "Rest", friday: "2-3 km (Easy)", saturday: "3 km (Light shakeout)" },
+            { overallWeek: 31, dateRange: "Jan 11 - Jan 17", monday: "1.5 km (Easy)", wednesday: "Rest", friday: "1.5 km (Easy)", saturday: "Rest" },
+            { overallWeek: "Marathon Race", dateRange: "Feb 1, 2026", monday: "Marathon Race - 42.2 km", wednesday: "Treat as crucial ultra-training run for 50-miler", friday: "", saturday: "" },
+            { overallWeek: 32, dateRange: "Feb 2 - Feb 8", monday: "5 km (Easy)", wednesday: "Rest", friday: "5 km (Easy)", saturday: "8 km (Very Easy)" },
+            { overallWeek: 33, dateRange: "Feb 9 - Feb 15", monday: "8 km (Easy)", wednesday: "6.5 km (Easy)", friday: "6.5 km (Easy)", saturday: "13 km (Easy)" },
+            { overallWeek: 34, dateRange: "Feb 16 - Feb 22", monday: "10 km (Easy)", wednesday: "8 km (Easy)", friday: "10 km (Easy)", saturday: "25 km (Ultra Volume)" },
+            { overallWeek: 35, dateRange: "Feb 23 - Mar 1", monday: "11.5 km (Easy)", wednesday: "8 km (Easy/Light Tempo)", friday: "11.5 km (Easy)", saturday: "35 km (Sustained Endurance)" },
+            { overallWeek: 36, dateRange: "Mar 2 - Mar 8", monday: "10 km (Easy)", wednesday: "10 km (Easy)", friday: "10 km (Easy)", saturday: "40-45 km (Peak Ultra Long Run)" },
+            { overallWeek: 37, dateRange: "Mar 9 - Mar 15", monday: "8 km (Easy)", wednesday: "6.5 km (Easy)", friday: "6.5 km (Easy)", saturday: "20 km (Cutback)" },
+            { overallWeek: 38, dateRange: "Mar 16 - Mar 22", monday: "10 km (Easy)", wednesday: "8 km (Easy/Light Tempo)", friday: "10 km (Easy)", saturday: "30-32 km (Pre-Taper Long)" },
+            { overallWeek: 39, dateRange: "Mar 23 - Mar 29", monday: "8 km (Easy)", wednesday: "6.5 km (Easy)", friday: "5 km (Easy)", saturday: "16 km (Ultra Taper)" },
+            { overallWeek: 40, dateRange: "Mar 30 - Apr 5", monday: "5 km (Easy)", wednesday: "3 km (Light strides)", friday: "3 km (Easy)", saturday: "10 km (Deeper Taper)" },
+            { overallWeek: 41, dateRange: "Apr 6 - Apr 10", monday: "3 km (Easy)", wednesday: "Rest", friday: "2 km (Easy)", saturday: "Rest" },
+            { overallWeek: "Ultra Race", dateRange: "April 11, 2026", monday: "50 MILE RACE (approx 80 KM)", wednesday: "", friday: "", saturday: "" }
+        ];
+
+        /**
+         * Parses a date string (e.g., "Jun 15") for the current year (2025 or 2026).
+         * Handles year transition for February 1st, 2026.
+         * @param {string} dateStr - The date string like "Jun 15".
+         * @param {number} currentYear - The base year to assume for the date.
+         * @returns {Date} A Date object for the parsed date.
+         */
+        function parseDate(dateStr, currentYear) {
+            const date = new Date(`${dateStr}, ${currentYear}`);
+            // If the month is later in the year than the current month, but the date string is for an earlier month,
+            // it means we've crossed a year boundary (e.g., Nov 2025 -> Jan 2026).
+            // This logic is simplified for the specific plan's date range (June 2025 to April 2026).
+            if (date.getFullYear() < currentYear && date.getMonth() < new Date().getMonth()) {
+                date.setFullYear(currentYear + 1);
+            }
+            return date;
+        }
+
+        /**
+         * Calculates the specific dates for Monday, Wednesday, Friday, and Saturday/Sunday
+         * based on the start date of the week.
+         * @param {string} dateRange - The date range string (e.g., "Jun 15 - Jun 21").
+         * @returns {Object} An object with Date objects for each run day.
+         */
+        function getRunDatesForWeek(dateRange) {
+            const [startMonthDay] = dateRange.split(' - ');
+            const startYear = startMonthDay.includes('Feb 1, 2026') || startMonthDay.includes('April 11, 2026') || new Date(`${startMonthDay}, 2025`).getMonth() > new Date().getMonth() ? 2026 : 2025; // Adjust year for 2026 dates
+            let startDate = new Date(`${startMonthDay}, ${startYear}`);
+
+            // Special handling for the start date if it's a Sunday, to correctly calculate Monday
+            let dayOfWeek = startDate.getDay(); // 0 = Sunday, 1 = Monday
+            if (dayOfWeek !== 1) { // If not Monday
+                startDate.setDate(startDate.getDate() - dayOfWeek + (dayOfWeek === 0 ? -6 : 1)); // Adjust to previous Monday
+            }
+
+            const monday = new Date(startDate);
+            const wednesday = new Date(startDate);
+            wednesday.setDate(startDate.getDate() + 2);
+            const friday = new Date(startDate);
+            friday.setDate(startDate.getDate() + 4);
+            const saturday = new Date(startDate);
+            saturday.setDate(startDate.getDate() + 5);
+
+            return { monday, wednesday, friday, saturday };
+        }
+
+        /**
+         * Formats a Date object into a YYYY-MM-DD string.
+         * @param {Date} date - The date object.
+         * @returns {string} Formatted date string.
+         */
+        function formatDateToYYYYMMDD(date) {
+            const year = date.getFullYear();
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const day = String(date.getDate()).padStart(2, '0');
+            return `${year}-${month}-${day}`;
+        }
+
+        /**
+         * Formats a Date object into a readable string (e.g., "Mon, Jun 15").
+         * @param {Date} date - The date object.
+         * @returns {string} Readable date string.
+         */
+        function formatReadableDate(date) {
+            return date.toLocaleDateString('en-GB', { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+        }
+
+        /**
+         * Saves a training day's status and comments to Firestore.
+         * @param {string} dateKey - YYYY-MM-DD formatted date.
+         * @param {string} runType - e.g., "Monday (Easy)".
+         * @param {string} distance - e.g., "5 km".
+         * @param {string} status - "completed", "partially_completed", "not_completed", or "none".
+         * @param {string} comments - User's comments.
+         */
+        async function saveTrainingDay(dateKey, runType, distance, status, comments) {
+            if (!currentUserId) {
+                console.error("User not authenticated. Cannot save data.");
+                return;
+            }
+            try {
+                const docRef = doc(db, `artifacts/${appId}/users/${currentUserId}/training_log`, dateKey);
+                await setDoc(docRef, {
+                    date: dateKey,
+                    runType: runType,
+                    distance: distance,
+                    status: status,
+                    comments: comments,
+                    timestamp: new Date() // Add a timestamp for ordering/tracking
+                }, { merge: true }); // Use merge to only update specified fields
+                console.log(`Saved data for ${dateKey}`);
+            } catch (error) {
+                console.error("Error saving document: ", error);
+            }
+        }
+
+        /**
+         * Renders the training plan UI based on the fetched training log data.
+         * @param {Object} trainingLog - Object containing saved training data, keyed by YYYY-MM-DD.
+         */
+        function renderTrainingPlan(trainingLog) {
+            trainingPlanContainer.innerHTML = ''; // Clear previous content
+
+            trainingPlanData.forEach(weekData => {
+                const weekDiv = document.createElement('div');
+                weekDiv.className = 'bg-white rounded-lg shadow-md p-6 mb-6';
+
+                const weekTitle = document.createElement('h2');
+                weekTitle.className = 'text-2xl font-semibold text-gray-800 mb-4';
+                weekTitle.textContent = `Week ${weekData.overallWeek} (${weekData.dateRange})`;
+                weekDiv.appendChild(weekTitle);
+
+                // Handle special "Race" weeks which don't have individual run days
+                if (weekData.overallWeek === "Marathon Race" || weekData.overallWeek === "Ultra Race") {
+                    const raceInfoDiv = document.createElement('div');
+                    raceInfoDiv.className = 'p-4 bg-blue-50 border border-blue-200 rounded-md text-blue-800';
+                    let raceDetails = `**${weekData.monday}**`;
+                    if (weekData.wednesday) raceDetails += `<br/>*Note:* ${weekData.wednesday}`;
+                    raceInfoDiv.innerHTML = raceDetails;
+                    weekDiv.appendChild(raceInfoDiv);
+                    trainingPlanContainer.appendChild(weekDiv);
+                    return; // Skip to next weekData
+                }
+
+                const runDates = getRunDatesForWeek(weekData.dateRange);
+
+                // Helper to render a single run day
+                const renderRunDay = (dayName, runDetails, dateObj) => {
+                    if (!runDetails || runDetails.toLowerCase().includes('rest')) {
+                        const restDayDiv = document.createElement('div');
+                        restDayDiv.className = 'p-4 rounded-lg mb-2 bg-gray-50 border border-gray-200';
+                        restDayDiv.innerHTML = `<h3 class="font-semibold text-lg">${dayName}, ${formatReadableDate(dateObj)} - <span class="text-gray-600">${runDetails || 'Rest Day'}</span></h3>`;
+                        weekDiv.appendChild(restDayDiv);
+                        return;
+                    }
+
+                    const dateKey = formatDateToYYYYMMDD(dateObj);
+                    const savedData = trainingLog[dateKey] || {};
+                    const currentStatus = savedData.status || 'none';
+                    const currentComments = savedData.comments || '';
+
+                    const dayDiv = document.createElement('div');
+                    dayDiv.id = `day-${dateKey}`;
+                    dayDiv.className = `p-4 rounded-lg shadow-sm mb-4 border ${
+                        currentStatus === 'completed' ? 'status-completed border-green-200' :
+                        currentStatus === 'partially_completed' ? 'status-partially_completed border-amber-200' :
+                        currentStatus === 'not_completed' ? 'status-not_completed border-red-200' :
+                        'bg-white border-gray-200'
+                    }`;
+
+                    dayDiv.innerHTML = `
+                        <h3 class="font-semibold text-lg mb-2">${dayName}, ${formatReadableDate(dateObj)} - ${runDetails}</h3>
+                        <div class="flex items-center space-x-4 mb-2">
+                            <label for="status-${dateKey}" class="text-gray-700">Status:</label>
+                            <select id="status-${dateKey}" class="p-2 border rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 flex-grow">
+      
